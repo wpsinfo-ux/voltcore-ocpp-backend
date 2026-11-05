@@ -2,27 +2,123 @@ require('dotenv').config();
 const { WebSocketServer } = require('ws');
 const http = require('http');
 const { createClient } = require('@supabase/supabase-js');
+const { MercadoPagoConfig, Payment } = require('mercadopago');
 
-// Configuração do Supabase (substitua pelas suas chaves ou use variáveis de ambiente)
+// Configuração do Supabase
 const supabaseUrl = process.env.SUPABASE_URL || 'SUA_URL_DO_SUPABASE';
 const supabaseKey = process.env.SUPABASE_KEY || 'SUA_CHAVE_SUPABASE';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-const server = http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('VoltCore OCPP Central System is running!\n');
+// Inicializa o SDK oficial do Mercado Pago com a chave de produção injetada no Render
+const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
+
+const server = http.createServer(async (req, res) => {
+  // Configuração de CORS para permitir requisições da Vercel
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'OPTIONS, GET, POST');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  // Rota raiz de status
+  if (req.url === '/' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'Online', service: 'VoltCore OCPP & Pagamentos Backend • Produção' }));
+    return;
+  }
+
+  // 1. Rota para Gerar Pagamento PIX Real (Mercado Pago)
+  if (req.url === '/api/pagamento/pix' && req.method === 'POST') {
+    let bodyData = '';
+    req.on('data', chunk => { bodyData += chunk; });
+    req.on('end', async () => {
+      try {
+        const { transaction_amount, description, email, first_name } = JSON.parse(bodyData);
+
+        const payment = new Payment(client);
+        const mpBody = {
+          transaction_amount: parseFloat(transaction_amount),
+          description: description || 'Recarga de Saldo • VoltCore Pay',
+          payment_method_id: 'pix',
+          payer: {
+            email: email || 'contato@wpsinfo.com.br',
+            first_name: first_name || 'Wanderson'
+          }
+        };
+
+        const response = await payment.create({ body: mpBody });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success: true,
+          id: response.id,
+          status: response.status,
+          qr_code: response.point_of_interaction.transaction_data.qr_code,
+          qr_code_base64: response.point_of_interaction.transaction_data.qr_code_base64
+        }));
+      } catch (error) {
+        console.error('Erro ao gerar Pix no Mercado Pago:', error);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: error.message }));
+      }
+    });
+    return;
+  }
+
+  // 2. Rota para Processar Pagamento com Cartão (Checkout Transparente • Mercado Pago)
+  if (req.url === '/api/pagamento/cartao' && req.method === 'POST') {
+    let bodyData = '';
+    req.on('data', chunk => { bodyData += chunk; });
+    req.on('end', async () => {
+      try {
+        const { transaction_amount, token, payment_method_id, installments, email, identification } = JSON.parse(bodyData);
+
+        const payment = new Payment(client);
+        const mpBody = {
+          transaction_amount: parseFloat(transaction_amount),
+          token: token || 'token_simulado',
+          installments: parseInt(installments || 1),
+          payment_method_id: payment_method_id || 'master',
+          payer: {
+            email: email || 'contato@wpsinfo.com.br',
+            identification: identification || { type: 'CPF', number: '12345678909' }
+          }
+        };
+
+        const response = await payment.create({ body: mpBody });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success: true,
+          id: response.id,
+          status: response.status,
+          status_detail: response.status_detail
+        }));
+      } catch (error) {
+        console.error('Erro ao processar cartão no Mercado Pago:', error);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: error.message }));
+      }
+    });
+    return;
+  }
+
+  res.writeHead(404, { 'Content-Type': 'text/plain' });
+  res.end('Not Found');
 });
 
 const wss = new WebSocketServer({ server });
 
 wss.on('connection', async (ws, req) => {
-  // Extrai o ID do carregador da URL (ex: ws://localhost:3000/ocpp/ESTACAO-01)
   const pathParts = req.url.split('/');
   const chargerId = pathParts[pathParts.length - 1] || 'ESTACAO-TESTE';
   
   console.log(`[CONEXÃO] Carregador/ESP conectado: ${chargerId}`);
 
-  // Registra ou atualiza o carregador no Supabase como 'Available'
   await supabase
     .from('voltcore_chargers')
     .upsert({ charger_id: chargerId, status: 'Available', last_heartbeat: new Date() }, { onConflict: 'charger_id' });
@@ -30,31 +126,17 @@ wss.on('connection', async (ws, req) => {
   ws.on('message', async (message) => {
     try {
       const payload = JSON.parse(message.toString());
-      console.log(`[MENSAGEM RECEBIDA de ${chargerId}]:`, payload);
-
       const messageTypeId = payload[0];
       const uniqueId = payload[1];
       const action = payload[2];
       const data = payload[3];
 
       if (action === 'BootNotification') {
-        // Responde ao BootNotification aceitando a conexão
-        const response = [
-          3,
-          uniqueId,
-          {
-            status: "Accepted",
-            currentTime: new Date().toISOString(),
-            interval: 300
-          }
-        ];
+        const response = [3, uniqueId, { status: "Accepted", currentTime: new Date().toISOString(), interval: 300 }];
         ws.send(JSON.stringify(response));
-        console.log(`[RESPOSTA] BootNotification aceito para ${chargerId}`);
       } 
       else if (action === 'StartTransaction') {
         const txId = Math.floor(Math.random() * 100000);
-        
-        // Salva a transação de início no Supabase
         await supabase.from('voltcore_transactions').insert({
           transaction_id: txId,
           charger_id: chargerId,
@@ -64,43 +146,23 @@ wss.on('connection', async (ws, req) => {
           start_meter: data.meterStart || 0,
           status: 'Charging'
         });
-
-        // Atualiza status do carregador
         await supabase.from('voltcore_chargers').update({ status: 'Charging', last_heartbeat: new Date() }).eq('charger_id', chargerId);
 
-        const response = [
-          3,
-          uniqueId,
-          {
-            transactionId: txId,
-            idTagInfo: { status: "Accepted" }
-          }
-        ];
+        const response = [3, uniqueId, { transactionId: txId, idTagInfo: { status: "Accepted" } }];
         ws.send(JSON.stringify(response));
-        console.log(`[TRANSAÇÃO] Iniciada e salva no Supabase com ID: ${txId}`);
       }
       else if (action === 'StopTransaction') {
-        // Atualiza a transação como concluída no Supabase
         await supabase.from('voltcore_transactions').update({
           stop_timestamp: new Date(data.timestamp || Date.now()),
           stop_meter: data.meterStop || 0,
           status: 'Completed'
         }).eq('transaction_id', data.transactionId);
 
-        // Atualiza status do carregador para disponível
         await supabase.from('voltcore_chargers').update({ status: 'Available', last_heartbeat: new Date() }).eq('charger_id', chargerId);
 
-        const response = [
-          3,
-          uniqueId,
-          {
-            idTagInfo: { status: "Accepted" }
-          }
-        ];
+        const response = [3, uniqueId, { idTagInfo: { status: "Accepted" } }];
         ws.send(JSON.stringify(response));
-        console.log(`[TRANSAÇÃO] Parada e finalizada no Supabase para ID: ${data.transactionId}`);
       }
-
     } catch (err) {
       console.error('[ERRO] Falha ao processar mensagem OCPP:', err);
     }
@@ -114,5 +176,5 @@ wss.on('connection', async (ws, req) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Servidor OCPP Central System rodando na porta ${PORT}`);
+  console.log(`Servidor OCPP Central System e Pagamentos rodando na porta ${PORT}`);
 });

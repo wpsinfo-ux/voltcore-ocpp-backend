@@ -1,7 +1,15 @@
 {
+  "name": "voltcore-ocpp-server",
+  "version": "1.0.0",
+  "description": "Backend OCPP e Pagamentos VoltCore",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
   "dependencies": {
     "@supabase/supabase-js": "^2.118.0",
     "dotenv": "^18.0.9",
+    "mercadopago": "^2.3.0",
     "pg": "^8.23.1",
     "ws": "^8.22.0"
   }
