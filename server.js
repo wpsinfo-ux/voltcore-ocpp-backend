@@ -37,16 +37,25 @@ const server = http.createServer(async (req, res) => {
     req.on('data', chunk => { bodyData += chunk; });
     req.on('end', async () => {
       try {
-        const { transaction_amount, description, email, first_name } = JSON.parse(bodyData);
+        const parsedData = bodyData ? JSON.parse(bodyData) : {};
+        const transaction_amount = parsedData.transaction_amount || 10.00;
+        const description = parsedData.description || 'Recarga de Saldo • VoltCore Pay';
+        const email = parsedData.email || 'contato@wpsinfo.com.br';
+        const first_name = parsedData.first_name || 'Wanderson';
 
         const payment = new Payment(client);
         const mpBody = {
           transaction_amount: parseFloat(transaction_amount),
-          description: description || 'Recarga de Saldo • VoltCore Pay',
+          description: description,
           payment_method_id: 'pix',
           payer: {
-            email: email || 'contato@wpsinfo.com.br',
-            first_name: first_name || 'Wanderson'
+            email: email,
+            first_name: first_name,
+            last_name: 'Silva',
+            identification: {
+              type: 'CPF',
+              number: '19119119119' // CPF genérico válido para testes de API ou substituto seguro
+            }
           }
         };
 
@@ -61,9 +70,13 @@ const server = http.createServer(async (req, res) => {
           qr_code_base64: response.point_of_interaction.transaction_data.qr_code_base64
         }));
       } catch (error) {
-        console.error('Erro ao gerar Pix no Mercado Pago:', error);
+        console.error('ERRO DETALHADO MERCADO PAGO (PIX):', error.cause || error.message || error);
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: false, error: error.message }));
+        res.end(JSON.stringify({ 
+          success: false, 
+          error: error.message || 'Erro ao gerar Pix no servidor',
+          details: error.cause || null 
+        }));
       }
     });
     return;
@@ -85,7 +98,7 @@ const server = http.createServer(async (req, res) => {
           payment_method_id: payment_method_id || 'master',
           payer: {
             email: email || 'contato@wpsinfo.com.br',
-            identification: identification || { type: 'CPF', number: '12345678909' }
+            identification: identification || { type: 'CPF', number: '19119119119' }
           }
         };
 
@@ -99,7 +112,7 @@ const server = http.createServer(async (req, res) => {
           status_detail: response.status_detail
         }));
       } catch (error) {
-        console.error('Erro ao processar cartão no Mercado Pago:', error);
+        console.error('ERRO DETALHADO MERCADO PAGO (CARTÃO):', error.cause || error.message || error);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false, error: error.message }));
       }
