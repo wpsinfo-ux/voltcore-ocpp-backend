@@ -31,7 +31,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 1. Rota para Gerar Pagamento PIX Real (Mercado Pago)
+  // 1. Rota para Gerar Pagamento PIX Real (Mercado Pago - Sem restrição rígida de CPF)
   if (req.url === '/api/pagamento/pix' && req.method === 'POST') {
     let bodyData = '';
     req.on('data', chunk => { bodyData += chunk; });
@@ -41,10 +41,6 @@ const server = http.createServer(async (req, res) => {
         const transaction_amount = parsedData.transaction_amount || 10.00;
         const description = parsedData.description || 'Recarga de Saldo • VoltCore Pay';
         const email = parsedData.email || 'contato@wpsinfo.com.br';
-        const first_name = parsedData.first_name || 'Wanderson';
-        
-        // CPF válido alternativo para passar pela validação de produção do Mercado Pago (Erro 2067 resolvido)
-        const userCpf = parsedData.cpf || parsedData.identification?.number || '34512378909';
 
         const payment = new Payment(client);
         const mpBody = {
@@ -52,13 +48,7 @@ const server = http.createServer(async (req, res) => {
           description: description,
           payment_method_id: 'pix',
           payer: {
-            email: email,
-            first_name: first_name,
-            last_name: 'Silva',
-            identification: {
-              type: 'CPF',
-              number: userCpf
-            }
+            email: email
           }
         };
 
