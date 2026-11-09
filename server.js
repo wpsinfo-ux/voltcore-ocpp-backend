@@ -31,7 +31,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 1. Rota para Gerar Pagamento PIX Real (Mercado Pago - Sem restrição rígida de CPF)
+  // 1. Rota para Gerar Pagamento PIX Real (Mercado Pago)
   if (req.url === '/api/pagamento/pix' && req.method === 'POST') {
     let bodyData = '';
     req.on('data', chunk => { bodyData += chunk; });
@@ -47,9 +47,7 @@ const server = http.createServer(async (req, res) => {
           transaction_amount: parseFloat(transaction_amount),
           description: description,
           payment_method_id: 'pix',
-          payer: {
-            email: email
-          }
+          payer: { email: email }
         };
 
         const response = await payment.create({ body: mpBody });
@@ -65,11 +63,7 @@ const server = http.createServer(async (req, res) => {
       } catch (error) {
         console.error('ERRO DETALHADO MERCADO PAGO (PIX):', error.cause || error.message || error);
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ 
-          success: false, 
-          error: error.message || 'Erro ao gerar Pix no servidor',
-          details: error.cause || null 
-        }));
+        res.end(JSON.stringify({ success: false, error: error.message || 'Erro ao gerar Pix no servidor', details: error.cause || null }));
       }
     });
     return;
@@ -81,18 +75,38 @@ const server = http.createServer(async (req, res) => {
     req.on('data', chunk => { bodyData += chunk; });
     req.on('end', async () => {
       try {
-        const { transaction_amount, token, payment_method_id, installments, email, identification } = JSON.parse(bodyData);
+        const { 
+          transaction_amount, 
+          description, 
+          payment_method_id, 
+          installments, 
+          payer, 
+          card_number, 
+          card_expiration_month, 
+          card_expiration_year, 
+          card_cvv, 
+          cardholder_name 
+        } = JSON.parse(bodyData);
 
         const payment = new Payment(client);
+        
+        // Se o cliente enviar os dados diretos do cartão para criação do pagamento transparente
         const mpBody = {
           transaction_amount: parseFloat(transaction_amount),
-          token: token || 'token_simulado',
-          installments: parseInt(installments || 1),
+          description: description || 'Recarga Carteira VoltCore Pay',
           payment_method_id: payment_method_id || 'master',
-          payer: {
-            email: email || 'contato@wpsinfo.com.br',
-            identification: identification || { type: 'CPF', number: '34512378909' }
-          }
+          installments: parseInt(installments || 1),
+          payer: payer,
+          // Caso venham os dados crus do cartão, passamos para o SDK processar
+          ...(card_number && {
+            card: {
+              number: card_number,
+              expiration_month: card_expiration_month,
+              expiration_year: card_expiration_year,
+              security_code: card_cvv,
+              cardholder: { name: cardholder_name }
+            }
+          })
         };
 
         const response = await payment.create({ body: mpBody });
@@ -107,7 +121,7 @@ const server = http.createServer(async (req, res) => {
       } catch (error) {
         console.error('ERRO DETALHADO MERCADO PAGO (CARTÃO):', error.cause || error.message || error);
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: false, error: error.message }));
+        res.end(JSON.stringify({ success: false, error: error.message, details: error.cause }));
       }
     });
     return;
@@ -132,14 +146,12 @@ wss.on('connection', async (ws, req) => {
   ws.on('message', async (message) => {
     try {
       const payload = JSON.parse(message.toString());
-      const messageTypeId = payload[0];
       const uniqueId = payload[1];
       const action = payload[2];
       const data = payload[3];
 
       if (action === 'BootNotification') {
-        const response = [3, uniqueId, { status: "Accepted", currentTime: new Date().toISOString(), interval: 300 }];
-        ws.send(JSON.stringify(response));
+        ws.send(JSON.stringify([3, uniqueId, { status: "Accepted", currentTime: new Date().toISOString(), interval: 300 }]));
       } 
       else if (action === 'StartTransaction') {
         const txId = Math.floor(Math.random() * 100000);
@@ -153,9 +165,7 @@ wss.on('connection', async (ws, req) => {
           status: 'Charging'
         });
         await supabase.from('voltcore_chargers').update({ status: 'Charging', last_heartbeat: new Date() }).eq('charger_id', chargerId);
-
-        const response = [3, uniqueId, { transactionId: txId, idTagInfo: { status: "Accepted" } }];
-        ws.send(JSON.stringify(response));
+        ws.send(JSON.stringify([3, uniqueId, { transactionId: txId, idTagInfo: { status: "Accepted" } }]));
       }
       else if (action === 'StopTransaction') {
         await supabase.from('voltcore_transactions').update({
@@ -165,9 +175,7 @@ wss.on('connection', async (ws, req) => {
         }).eq('transaction_id', data.transactionId);
 
         await supabase.from('voltcore_chargers').update({ status: 'Available', last_heartbeat: new Date() }).eq('charger_id', chargerId);
-
-        const response = [3, uniqueId, { idTagInfo: { status: "Accepted" } }];
-        ws.send(JSON.stringify(response));
+        ws.send(JSON.stringify([3, uniqueId, { idTagInfo: { status: "Accepted" } }]));
       }
     } catch (err) {
       console.error('[ERRO] Falha ao processar mensagem OCPP:', err);
