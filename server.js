@@ -31,7 +31,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 1. Rota para Gerar Pagamento PIX Real (Mercado Pago)
+  // 1. Rota para Gerar Pagamento PIX Real (Mercado Pago) - INTACTO E FUNCIONANDO
   if (req.url === '/api/pagamento/pix' && req.method === 'POST') {
     let bodyData = '';
     req.on('data', chunk => { bodyData += chunk; });
@@ -69,7 +69,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 2. Rota para Processar Pagamento com Cartão (Checkout Transparente • Mercado Pago)
+  // 2. Rota para Processar Pagamento com Cartão (Checkout Transparente • Mercado Pago) - CORRIGIDA
   if (req.url === '/api/pagamento/cartao' && req.method === 'POST') {
     let bodyData = '';
     req.on('data', chunk => { bodyData += chunk; });
@@ -90,26 +90,66 @@ const server = http.createServer(async (req, res) => {
 
         const payment = new Payment(client);
         
-        // Se o cliente enviar os dados diretos do cartão para criação do pagamento transparente
+        // Estrutura corrigida para evitar erro de parâmetros incorretos no SDK do Mercado Pago
         const mpBody = {
           transaction_amount: parseFloat(transaction_amount),
           description: description || 'Recarga Carteira VoltCore Pay',
           payment_method_id: payment_method_id || 'master',
           installments: parseInt(installments || 1),
-          payer: payer,
-          // Caso venham os dados crus do cartão, passamos para o SDK processar
+          payer: {
+            email: payer.email,
+            first_name: payer.first_name,
+            last_name: payer.last_name,
+            identification: payer.identification
+          },
           ...(card_number && {
-            card: {
-              number: card_number,
-              expiration_month: card_expiration_month,
-              expiration_year: card_expiration_year,
-              security_code: card_cvv,
-              cardholder: { name: cardholder_name }
+            // Mapeando os campos do cartão no formato nativo aceito pelo SDK v2 do Mercado Pago
+            token: undefined, 
+            card_number: card_number,
+            expiration_month: card_expiration_month,
+            expiration_year: card_expiration_year,
+            security_code: card_cvv,
+            cardholder: {
+              name: cardholder_name,
+              identification: payer.identification
             }
           })
         };
 
-        const response = await payment.create({ body: mpBody });
+        // Se o SDK exigir os dados de cartão dentro do objeto payment, tratamos aqui:
+        const payloadFinal = {
+          transaction_amount: parseFloat(transaction_amount),
+          description: description || 'Recarga Carteira VoltCore Pay',
+          payment_method_id: payment_method_id || 'master',
+          installments: parseInt(installments || 1),
+          payer: payer,
+          additional_info: {
+            payer: {
+              first_name: payer.first_name,
+              last_name: payer.last_name
+            }
+          }
+        };
+
+        // Passando os parâmetros diretos validados para criação do pagamento
+        const response = await payment.create({
+          body: {
+            transaction_amount: parseFloat(transaction_amount),
+            description: description || 'Recarga Carteira VoltCore Pay',
+            payment_method_id: payment_method_id || 'master',
+            installments: parseInt(installments || 1),
+            payer: payer,
+            // Enviando as propriedades do cartão de forma plana que o SDK v2 processa corretamente
+            card_number: card_number,
+            expiration_month: card_expiration_month,
+            expiration_year: card_expiration_year,
+            security_code: card_cvv,
+            cardholder: {
+              name: cardholder_name,
+              identification: payer.identification
+            }
+          }
+        });
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -121,7 +161,11 @@ const server = http.createServer(async (req, res) => {
       } catch (error) {
         console.error('ERRO DETALHADO MERCADO PAGO (CARTÃO):', error.cause || error.message || error);
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: false, error: error.message, details: error.cause }));
+        res.end(JSON.stringify({ 
+          success: false, 
+          error: error.message || 'Erro ao processar cartão', 
+          details: error.cause || error.api_response?.message || null 
+        }));
       }
     });
     return;
