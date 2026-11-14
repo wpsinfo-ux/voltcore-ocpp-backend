@@ -5,7 +5,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { MercadoPagoConfig, Payment } = require('mercadopago');
 
 // Configuração do Supabase
-const supabaseUrl = process.env.SUPABASE_URL || 'https://eoqfuawvljvotvyfrcbj.supabase.co';
+const supabaseUrl = process.env.SUPABASE_URL || 'https://eoqfuawvljotvyfrcbj.supabase.co';
 const supabaseKey = process.env.SUPABASE_KEY || 'sb_publishable_l0JQ_niTmthXhm09X60uAg_pi4ds';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
