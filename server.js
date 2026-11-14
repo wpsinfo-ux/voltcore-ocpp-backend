@@ -27,7 +27,7 @@ const server = http.createServer(async (req, res) => {
   // Rota raiz de status
   if (req.url === '/' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'Online', service: 'VoltCore OCPP, OCPI 2.2 Roaming Modular & Pagamentos Backend • Produção' }));
+    res.end(JSON.stringify({ status: 'Online', service: 'VoltCore OCPP, OCPI 2.2 Roaming Modular & Pagamentos Backend • Produção V9.7' }));
     return;
   }
 
@@ -76,7 +76,9 @@ const server = http.createServer(async (req, res) => {
     req.on('data', chunk => { bodyData += chunk; });
     req.on('end', async () => {
       try {
-        const { transaction_amount, token, payment_method_id, installments, email, identification, card_number, cardholder_name } = JSON.parse(bodyData);
+        const parsed = JSON.parse(bodyData);
+        const { transaction_amount, token, payment_method_id, installments, payer, email, identification, card_number, cardholder_name } = parsed;
+        const userEmail = (payer && payer.email) || email || 'contato@wpsinfo.com.br';
 
         const payment = new Payment(client);
         const response = await payment.create({
@@ -86,8 +88,8 @@ const server = http.createServer(async (req, res) => {
             installments: parseInt(installments || 1),
             payment_method_id: payment_method_id || 'master',
             payer: {
-              email: email || 'contato@wpsinfo.com.br',
-              identification: identification || { type: 'CPF', number: '12345678909' }
+              email: userEmail,
+              identification: (payer && payer.identification) || identification || { type: 'CPF', number: '12345678909' }
             }
           }
         });
@@ -96,7 +98,7 @@ const server = http.createServer(async (req, res) => {
         const cardId = 'card_' + Date.now();
 
         await supabase.from('voltcore_saved_cards').insert([{
-          user_email: email || 'contato@wpsinfo.com.br',
+          user_email: userEmail,
           card_id: cardId,
           last_four: lastFour,
           brand: 'Mastercard',
