@@ -27,7 +27,7 @@ const server = http.createServer(async (req, res) => {
   // Rota raiz de status
   if (req.url === '/' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'Online', service: 'VoltCore OCPP, OCPI 2.2 Roaming Modular & Pagamentos Backend • Produção V9.7' }));
+    res.end(JSON.stringify({ status: 'Online', service: 'VoltCore OCPP, OCPI 2.2 Roaming & Pagamentos Seguros • Produção V9.8' }));
     return;
   }
 
@@ -70,7 +70,29 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 2. Rota para Processar Pagamento com Cartão (Checkout Transparente • Mercado Pago)
+  // 1.1 Rota para Consultar Status Real de Pagamento (Validação de Compensação PIX)
+  if (req.url.startsWith('/api/pagamento/status/') && req.method === 'GET') {
+    try {
+      const paymentId = req.url.split('/').pop();
+      const payment = new Payment(client);
+      const response = await payment.get({ id: paymentId });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        id: response.id,
+        status: response.status,
+        status_detail: response.status_detail
+      }));
+    } catch (error) {
+      console.error('Erro ao consultar status do pagamento:', error);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: error.message || 'Erro ao consultar status' }));
+    }
+    return;
+  }
+
+  // 2. Rota para Processar Pagamento com Cartão (SEM FALLBACK DE APROVAÇÃO FAKE)
   if (req.url === '/api/pagamento/cartao' && req.method === 'POST') {
     let bodyData = '';
     req.on('data', chunk => { bodyData += chunk; });
@@ -80,11 +102,15 @@ const server = http.createServer(async (req, res) => {
         const { transaction_amount, token, payment_method_id, installments, payer, email, identification, card_number, cardholder_name } = parsed;
         const userEmail = (payer && payer.email) || email || 'contato@wpsinfo.com.br';
 
+        if (!token || token === 'token_simulado') {
+          throw new Error('Token de cartão inválido ou ausente. Cobrança bloqueada por segurança.');
+        }
+
         const payment = new Payment(client);
         const response = await payment.create({
           body: {
             transaction_amount: parseFloat(transaction_amount),
-            token: token || 'token_simulado',
+            token: token,
             installments: parseInt(installments || 1),
             payment_method_id: payment_method_id || 'master',
             payer: {
@@ -94,45 +120,44 @@ const server = http.createServer(async (req, res) => {
           }
         });
 
-        const lastFour = card_number ? card_number.slice(-4) : '4622';
-        const cardId = 'card_' + Date.now();
+        // Só salva o cartão e autoriza se o status real do Mercado Pago for 'approved'
+        if (response.status === 'approved') {
+          const lastFour = card_number ? card_number.slice(-4) : '0000';
+          const cardId = 'card_' + Date.now();
 
-        await supabase.from('voltcore_saved_cards').insert([{
-          user_email: userEmail,
-          card_id: cardId,
-          last_four: lastFour,
-          brand: 'Mastercard',
-          cardholder_name: cardholder_name || 'Wanderson Pedro da Silva'
-        }]);
+          await supabase.from('voltcore_saved_cards').insert([{
+            user_email: userEmail,
+            card_id: cardId,
+            last_four: lastFour,
+            brand: 'Mastercard',
+            cardholder_name: cardholder_name || 'Titular'
+          }]);
 
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          success: true,
-          id: response.id,
-          status: response.status,
-          status_detail: response.status_detail,
-          card_id: cardId,
-          card_last_four: lastFour
-        }));
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            success: true,
+            id: response.id,
+            status: response.status,
+            status_detail: response.status_detail,
+            card_id: cardId,
+            card_last_four: lastFour
+          }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            success: false,
+            status: response.status,
+            status_detail: response.status_detail,
+            error: `Pagamento não aprovado pelo Mercado Pago (${response.status_detail || response.status})`
+          }));
+        }
       } catch (error) {
-        console.error('Erro ao processar cartão no Mercado Pago:', error);
-        const lastFour = '4622';
-        const cardId = 'card_' + Date.now();
-        await supabase.from('voltcore_saved_cards').insert([{
-          user_email: 'contato@wpsinfo.com.br',
-          card_id: cardId,
-          last_four: lastFour,
-          brand: 'Mastercard',
-          cardholder_name: 'Wanderson Pedro da Silva'
-        }]);
-
-        res.writeHead(200, { 'Content-Type': 'application/json' });
+        console.error('Cobrança de cartão recusada/falhou:', error.message);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
-          success: true, 
-          status: 'approved',
-          card_id: cardId,
-          card_last_four: lastFour,
-          message: 'Cartão processado e salvo na base relacional com sucesso.' 
+          success: false, 
+          status: 'rejected',
+          error: error.message || 'Transação recusada pela operadora.' 
         }));
       }
     });
@@ -185,7 +210,6 @@ const server = http.createServer(async (req, res) => {
   // ARQUITETURA OFICIAL OCPI v2.2 (ROAMING & INTEROPERABILIDADE)
   // ==========================================================================
   
-  // 5. OCPI • Versões (Discovery Endpoint)
   if (req.url === '/ocpi/versions' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -197,7 +221,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 6. OCPI • Detalhes da Versão 2.2 (Endpoints do Módulo)
   if (req.url === '/ocpi/2.2' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -217,7 +240,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 7. OCPI • Locations (Exposição CPO das Estações Cadastradas no Supabase)
   if (req.url.startsWith('/ocpi/2.2/locations') && req.method === 'GET') {
     try {
       const { data: pontosDB } = await supabase.from('pontos_recarga').select('*');
@@ -264,7 +286,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 8. OCPI • Commands (RemoteStart / RemoteStop via Roaming Externo)
   if (req.url.startsWith('/ocpi/2.2/commands') && req.method === 'POST') {
     let bodyData = '';
     req.on('data', chunk => { bodyData += chunk; });
@@ -353,5 +374,5 @@ wss.on('connection', async (ws, req) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Servidor OCPP Central System, OCPI 2.2 & Pagamentos rodando na porta ${PORT}`);
+  console.log(`Servidor OCPP Central System, OCPI 2.2 & Pagamentos Seguros rodando na porta ${PORT}`);
 });
